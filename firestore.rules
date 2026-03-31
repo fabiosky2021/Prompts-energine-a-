@@ -1,0 +1,70 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    // Document ID: userId
+    // Fields:
+    //   - email: string (required, immutable)
+    //   - createdAt: timestamp (required, immutable)
+    //   - role: string (required, immutable)
+    //
+    // Collection: prompts
+    // Document ID: promptId
+    // Fields:
+    //   - userId: string (required, immutable)
+    //   - content: string (required, max 1000 chars)
+    //   - createdAt: timestamp (required, immutable)
+    //   - feedback: string (optional, max 50 chars)
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Domain Validators
+    function isValidUser(data) {
+      return data.email is string && data.email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+             data.createdAt is timestamp &&
+             data.role is string && data.role in ['user', 'admin'];
+    }
+
+    function isValidPrompt(data) {
+      return data.userId is string &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 1000 &&
+             data.createdAt is timestamp &&
+             (!('feedback' in data) || (data.feedback is string && data.feedback.size() <= 50));
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && hasRequiredFields(['email', 'createdAt', 'role']) && isValidUser(request.resource.data) && hasOnlyAllowedFields(['email', 'createdAt', 'role']);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && areImmutableFieldsUnchanged(['email', 'createdAt', 'role']);
+    }
+
+    match /prompts/{promptId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.userId && hasRequiredFields(['userId', 'content', 'createdAt']) && isValidPrompt(request.resource.data) && hasOnlyAllowedFields(['userId', 'content', 'createdAt', 'feedback']);
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.userId && isValidPrompt(request.resource.data) && areImmutableFieldsUnchanged(['userId', 'createdAt']);
+    }
+  }
+}
